@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the code.
+permissions:
+  contents: read
+
+# A new push to the same PR cancels the stale run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The minimum go.mod promises, and whatever is newest.
+        go: ["1.25.x", "stable"]
+    steps:
+      # Actions are pinned to commit SHAs: a tag can be moved, a SHA cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false # no third-party dependencies, so nothing to cache
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: test (race detector)
+        run: go test -race -count=1 ./...
+
+      - name: chaos soak
+        # 2,000 seeded crash/partition/packet-loss runs against the Raft core.
+        # On failure, the subtest name (e.g. TestChaos/n5/seed1234) replays it exactly.
+        env:
+          RAFT_CHAOS_SEEDS: "1000"
+        run: go test -count=1 -run TestChaos ./raft/
